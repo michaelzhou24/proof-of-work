@@ -19,7 +19,7 @@ func main() {
 
 	tracer := tracing.NewTracerFromFile("tracing_config.json")
 	defer tracer.Close()
-	result, err := hash_miner.Mine(tracer, []uint8{1, 2, 3, 4}, 5, 4)
+	result, err := hash_miner.Mine(tracer, []uint8{1, 2, 3, 4}, 7, 4)
 	log.Printf("First result returned: %v, %v\n", result, err)
 
 	// how to check the mining result (notice the %x format!)

@@ -9,7 +9,6 @@ import (
 	"math"
 	"strings"
 	"sync"
-	"time"
 )
 
 type WorkerStart struct {
@@ -34,7 +33,7 @@ type MiningComplete struct {
 var succeeded = make(chan WorkerSuccess)
 var foundAns bool = false
 func mineWorker(waitgroup *sync.WaitGroup, tracer *tracing.Tracer, startingPrefix uint8, nonce []uint8, numTrailingZeroes uint, threadBits uint) {
-	//defer waitgroup.Done()
+	defer waitgroup.Done()
 	tracer.RecordAction(WorkerStart{startingPrefix})
 	queue := list.New()
 	startingArr := new(bytes.Buffer)
@@ -53,55 +52,46 @@ func mineWorker(waitgroup *sync.WaitGroup, tracer *tracing.Tracer, startingPrefi
 	// 2^(8-threadbits) * 2^(8-threadbits) to do
 
 	for i := 0; i < int(math.Exp2(float64(8-threadBits))); i++ {
-		select {
-		case success := <-succeeded:
-			succeeded <- success
+		if foundAns {
 			tracer.RecordAction(WorkerCancelled{startingPrefix})
 			return
-		default:
-			cpy := make([]uint8, len(queue.Front().Value.([]byte)))
-			copy(cpy, queue.Front().Value.([]byte))
-			cpy[0] |= uint8(i)
-			// check if correct hash
-			if checkMinedValue(nonce, numTrailingZeroes, cpy) {
-				success := WorkerSuccess{startingPrefix, cpy}
-				tracer.RecordAction(success)
-				succeeded <-success
-				return
-			}
-			queue.PushBack(cpy)
 		}
+		cpy := make([]uint8, len(queue.Front().Value.([]byte)))
+		copy(cpy, queue.Front().Value.([]byte))
+		cpy[0] |= uint8(i)
+		// check if correct hash
+		if checkMinedValue(nonce, numTrailingZeroes, cpy) {
+			success := WorkerSuccess{startingPrefix, cpy}
+			tracer.RecordAction(success)
+			succeeded <-success
+			return
+		}
+		queue.PushBack(cpy)
 	}
 	queue.Remove(queue.Front())
 
 	for {
-		select {
-		case success := <-succeeded:
-			succeeded <- success
+		if foundAns {
 			tracer.RecordAction(WorkerCancelled{startingPrefix})
 			return
-		default:
-			for i := 0; i < 0x100; i++ {
-				select {
-				case success := <-succeeded:
-					succeeded <- success
-					tracer.RecordAction(WorkerCancelled{startingPrefix})
-					return
-				default:
-					curSecret := new(bytes.Buffer)
-					curSecret.Write(queue.Front().Value.([]byte))
-					curSecret.WriteByte(reverseBits(byte(i)))
-					if checkMinedValue(nonce, numTrailingZeroes, curSecret.Bytes()) {
-						success := WorkerSuccess{startingPrefix, curSecret.Bytes()}
-						tracer.RecordAction(success)
-						succeeded <- success
-						return
-					}
-					queue.PushBack(curSecret.Bytes())
-				}
-			}
-			queue.Remove(queue.Front())
 		}
+		for i := 0; i < 0x100; i++ {
+			if foundAns {
+				tracer.RecordAction(WorkerCancelled{startingPrefix})
+				return
+			}
+			curSecret := new(bytes.Buffer)
+			curSecret.Write(queue.Front().Value.([]byte))
+			curSecret.WriteByte(reverseBits(byte(i)))
+			if checkMinedValue(nonce, numTrailingZeroes, curSecret.Bytes()) {
+				success := WorkerSuccess{startingPrefix, curSecret.Bytes()}
+				tracer.RecordAction(success)
+				succeeded <- success
+				return
+			}
+			queue.PushBack(curSecret.Bytes())
+		}
+		queue.Remove(queue.Front())
 	}
 }
 
@@ -113,20 +103,19 @@ func reverseBits(b byte) byte{
 }
 
 func checkMinedValue(nonce []uint8, numTrailingZeroes uint, secret []uint8) bool {
-	select {
-	case success := <-succeeded:
-		succeeded <- success
+	if foundAns {
 		return false
-	default:
-		var compareString string
-		for i := uint(0); i < numTrailingZeroes; i++ {
-			compareString += "0"
-		}
-		concat := append(nonce, secret...)
-		checksum := md5.Sum(concat)
-		hashString := fmt.Sprintf("%x", checksum)
-		return strings.HasSuffix(hashString, compareString)
 	}
+
+	var compareString string
+	for i := uint(0); i < numTrailingZeroes; i++ {
+		compareString += "0"
+	}
+	concat := append(nonce, secret...)
+	checksum := md5.Sum(concat)
+	hashString := fmt.Sprintf("%x", checksum)
+	return strings.HasSuffix(hashString, compareString)
+
 }
 
 func Mine(tracer *tracing.Tracer, nonce []uint8, numTrailingZeroes, threadBits uint) (secret []uint8, err error) {
@@ -135,15 +124,14 @@ func Mine(tracer *tracing.Tracer, nonce []uint8, numTrailingZeroes, threadBits u
 	// TODO
 	var waitgroup sync.WaitGroup
 	for i := uint8(0); i < uint8(math.Exp2(float64(threadBits))); i++ {
-		//waitgroup.Add(1)
+		waitgroup.Add(1)
 		go mineWorker(&waitgroup, tracer, i, nonce, numTrailingZeroes, threadBits)
 	}
 	success := <-succeeded
-	succeeded<-success
-	//waitgroup.Wait()
-	time.Sleep(5000)
+	foundAns = true
+	waitgroup.Wait()
 	result := success.Secret
-	tracer.RecordAction(MiningComplete{result})
 
+	tracer.RecordAction(MiningComplete{result})
 	return result, nil
 }
