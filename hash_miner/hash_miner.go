@@ -7,7 +7,6 @@ import (
 	"github.com/DistributedClocks/tracing"
 	"math"
 	"strings"
-	"sync"
 )
 
 type WorkerStart struct {
@@ -31,10 +30,8 @@ type MiningComplete struct {
 
 var succeeded = make(chan WorkerSuccess)
 
-func MineSuffix(wg *sync.WaitGroup, tracer *tracing.Tracer, startingPrefix uint8, nonce []uint8, numTrailingZeroes uint, threadBits uint) {
-	//fmt.Printf("Created worker with prefix: %#b\n", startingPrefix)
+func mineWorker(tracer *tracing.Tracer, startingPrefix uint8, nonce []uint8, numTrailingZeroes uint, threadBits uint) {
 	tracer.RecordAction(WorkerStart{startingPrefix})
-	defer wg.Done()
 	queue := make([][]uint8, 0)
 	startingArr := new(bytes.Buffer)
 	startingArr.WriteByte(startingPrefix << (8-threadBits))
@@ -45,6 +42,7 @@ func MineSuffix(wg *sync.WaitGroup, tracer *tracing.Tracer, startingPrefix uint8
 		return
 	}
 	queue = append(queue, startingArr.Bytes())
+
 	//fmt.Printf("q: %#b\n", queue[0][0])
 	// check if starting suffix is enough
 	// Handle first byte
@@ -78,16 +76,22 @@ func MineSuffix(wg *sync.WaitGroup, tracer *tracing.Tracer, startingPrefix uint8
 			return
 		default:
 			for i := 0; i < 0x100; i++ {
-				curSecret := new(bytes.Buffer)
-				curSecret.Write(queue[0])
-				curSecret.WriteByte(reverseBits(byte(i)))
-				if checkMinedValue(nonce, numTrailingZeroes, curSecret.Bytes()) {
-					success := WorkerSuccess{startingPrefix, curSecret.Bytes()}
-					tracer.RecordAction(success)
-					succeeded <-success
+				select {
+				case <-succeeded:
+					tracer.RecordAction(WorkerCancelled{startingPrefix})
 					return
+				default:
+					curSecret := new(bytes.Buffer)
+					curSecret.Write(queue[0])
+					curSecret.WriteByte(reverseBits(byte(i)))
+					if checkMinedValue(nonce, numTrailingZeroes, curSecret.Bytes()) {
+						success := WorkerSuccess{startingPrefix, curSecret.Bytes()}
+						tracer.RecordAction(success)
+						succeeded <- success
+						return
+					}
+					queue = append(queue, curSecret.Bytes())
 				}
-				queue = append(queue, curSecret.Bytes())
 			}
 			queue = queue[1:]
 		}
@@ -122,14 +126,9 @@ func Mine(tracer *tracing.Tracer, nonce []uint8, numTrailingZeroes, threadBits u
 
 	// TODO
 
-	// initialize threads
-	var wg sync.WaitGroup
-
 	for i := uint8(0); i < uint8(math.Exp2(float64(threadBits))); i++ {
-		wg.Add(1)
-		go MineSuffix(&wg, tracer, i, nonce, numTrailingZeroes, threadBits)
+		go mineWorker(tracer, i, nonce, numTrailingZeroes, threadBits)
 	}
-	//wg.Wait()
 	success := <-succeeded
 	result := success.Secret
 	tracer.RecordAction(MiningComplete{result})
