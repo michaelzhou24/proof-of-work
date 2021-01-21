@@ -2,11 +2,14 @@ package hash_miner
 
 import (
 	"bytes"
+	"container/list"
 	"crypto/md5"
 	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"math"
 	"strings"
+	"sync"
+	"time"
 )
 
 type WorkerStart struct {
@@ -29,10 +32,11 @@ type MiningComplete struct {
 }
 
 var succeeded = make(chan WorkerSuccess)
-
-func mineWorker(tracer *tracing.Tracer, startingPrefix uint8, nonce []uint8, numTrailingZeroes uint, threadBits uint) {
+var foundAns bool = false
+func mineWorker(waitgroup *sync.WaitGroup, tracer *tracing.Tracer, startingPrefix uint8, nonce []uint8, numTrailingZeroes uint, threadBits uint) {
+	//defer waitgroup.Done()
 	tracer.RecordAction(WorkerStart{startingPrefix})
-	queue := make([][]uint8, 0)
+	queue := list.New()
 	startingArr := new(bytes.Buffer)
 	startingArr.WriteByte(startingPrefix << (8-threadBits))
 	if checkMinedValue(nonce, numTrailingZeroes, startingArr.Bytes()) {
@@ -41,7 +45,7 @@ func mineWorker(tracer *tracing.Tracer, startingPrefix uint8, nonce []uint8, num
 		succeeded <-success
 		return
 	}
-	queue = append(queue, startingArr.Bytes())
+	queue.PushBack(startingArr.Bytes())
 
 	//fmt.Printf("q: %#b\n", queue[0][0])
 	// check if starting suffix is enough
@@ -50,12 +54,13 @@ func mineWorker(tracer *tracing.Tracer, startingPrefix uint8, nonce []uint8, num
 
 	for i := 0; i < int(math.Exp2(float64(8-threadBits))); i++ {
 		select {
-		case <-succeeded:
+		case success := <-succeeded:
+			succeeded <- success
 			tracer.RecordAction(WorkerCancelled{startingPrefix})
 			return
 		default:
-			cpy := make([]uint8, len(queue[0]))
-			copy(cpy, queue[0])
+			cpy := make([]uint8, len(queue.Front().Value.([]byte)))
+			copy(cpy, queue.Front().Value.([]byte))
 			cpy[0] |= uint8(i)
 			// check if correct hash
 			if checkMinedValue(nonce, numTrailingZeroes, cpy) {
@@ -64,25 +69,27 @@ func mineWorker(tracer *tracing.Tracer, startingPrefix uint8, nonce []uint8, num
 				succeeded <-success
 				return
 			}
-			queue = append(queue, cpy)
+			queue.PushBack(cpy)
 		}
 	}
-	queue = queue[1:]
+	queue.Remove(queue.Front())
 
 	for {
 		select {
-		case <-succeeded:
+		case success := <-succeeded:
+			succeeded <- success
 			tracer.RecordAction(WorkerCancelled{startingPrefix})
 			return
 		default:
 			for i := 0; i < 0x100; i++ {
 				select {
-				case <-succeeded:
+				case success := <-succeeded:
+					succeeded <- success
 					tracer.RecordAction(WorkerCancelled{startingPrefix})
 					return
 				default:
 					curSecret := new(bytes.Buffer)
-					curSecret.Write(queue[0])
+					curSecret.Write(queue.Front().Value.([]byte))
 					curSecret.WriteByte(reverseBits(byte(i)))
 					if checkMinedValue(nonce, numTrailingZeroes, curSecret.Bytes()) {
 						success := WorkerSuccess{startingPrefix, curSecret.Bytes()}
@@ -90,10 +97,10 @@ func mineWorker(tracer *tracing.Tracer, startingPrefix uint8, nonce []uint8, num
 						succeeded <- success
 						return
 					}
-					queue = append(queue, curSecret.Bytes())
+					queue.PushBack(curSecret.Bytes())
 				}
 			}
-			queue = queue[1:]
+			queue.Remove(queue.Front())
 		}
 	}
 }
@@ -107,7 +114,8 @@ func reverseBits(b byte) byte{
 
 func checkMinedValue(nonce []uint8, numTrailingZeroes uint, secret []uint8) bool {
 	select {
-	case <-succeeded:
+	case success := <-succeeded:
+		succeeded <- success
 		return false
 	default:
 		var compareString string
@@ -125,11 +133,15 @@ func Mine(tracer *tracing.Tracer, nonce []uint8, numTrailingZeroes, threadBits u
 	tracer.RecordAction(MiningBegin{})
 
 	// TODO
-
+	var waitgroup sync.WaitGroup
 	for i := uint8(0); i < uint8(math.Exp2(float64(threadBits))); i++ {
-		go mineWorker(tracer, i, nonce, numTrailingZeroes, threadBits)
+		//waitgroup.Add(1)
+		go mineWorker(&waitgroup, tracer, i, nonce, numTrailingZeroes, threadBits)
 	}
 	success := <-succeeded
+	succeeded<-success
+	//waitgroup.Wait()
+	time.Sleep(5000)
 	result := success.Secret
 	tracer.RecordAction(MiningComplete{result})
 
