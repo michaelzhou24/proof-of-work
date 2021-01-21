@@ -123,9 +123,9 @@ func Mine(tracer *tracing.Tracer, nonce []uint8, numTrailingZeroes, threadBits u
 
 	// TODO
 	var waitgroup sync.WaitGroup
-	for i := uint8(0); i < uint8(math.Exp2(float64(threadBits))); i++ {
+	for i := 0; i < int(math.Exp2(float64(threadBits))); i++ {
 		waitgroup.Add(1)
-		go mineWorker(&waitgroup, tracer, i, nonce, numTrailingZeroes, threadBits)
+		go mineWorker(&waitgroup, tracer, uint8(i), nonce, numTrailingZeroes, threadBits)
 	}
 	success := <-succeeded
 	foundAns = true
