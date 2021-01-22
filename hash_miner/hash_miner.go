@@ -45,7 +45,7 @@ func mineWorker(waitgroup *sync.WaitGroup, tracer *tracing.Tracer, startingPrefi
 		return
 	}
 	queue.PushBack(startingArr.Bytes())
-
+	startingArr.Reset()
 	//fmt.Printf("q: %#b\n", queue[0][0])
 	// check if starting suffix is enough
 	// Handle first byte
@@ -75,6 +75,7 @@ func mineWorker(waitgroup *sync.WaitGroup, tracer *tracing.Tracer, startingPrefi
 			tracer.RecordAction(WorkerCancelled{startingPrefix})
 			return
 		}
+
 		for i := 0; i < 0x100; i++ {
 			if foundAns {
 				tracer.RecordAction(WorkerCancelled{startingPrefix})
@@ -85,11 +86,14 @@ func mineWorker(waitgroup *sync.WaitGroup, tracer *tracing.Tracer, startingPrefi
 			curSecret.WriteByte(reverseBits(byte(i)))
 			if checkMinedValue(nonce, numTrailingZeroes, curSecret.Bytes()) {
 				success := WorkerSuccess{startingPrefix, curSecret.Bytes()}
+				foundAns = true
 				tracer.RecordAction(success)
 				succeeded <- success
+				close(succeeded)
 				return
 			}
 			queue.PushBack(curSecret.Bytes())
+			curSecret.Reset()
 		}
 		queue.Remove(queue.Front())
 	}
@@ -128,7 +132,6 @@ func Mine(tracer *tracing.Tracer, nonce []uint8, numTrailingZeroes, threadBits u
 		go mineWorker(&waitgroup, tracer, uint8(i), nonce, numTrailingZeroes, threadBits)
 	}
 	success := <-succeeded
-	foundAns = true
 	waitgroup.Wait()
 	result := success.Secret
 
