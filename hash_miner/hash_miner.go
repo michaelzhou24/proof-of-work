@@ -68,28 +68,39 @@ func mineWorker(waitgroup *sync.WaitGroup, tracer *tracing.Tracer, startingPrefi
 		}
 		firstByteCombos = append(firstByteCombos, cpy)
 	}
-
+	// logic: append every int from 0 to MaxUint64 to each combo of the starting byte and check.
 	for i := uint64(0); i < math.MaxUint64; i++ {
 		for idx := 0; idx < len(firstByteCombos); idx++ {
 			if foundAns {
 				tracer.RecordAction(WorkerCancelled{startingPrefix})
 				return
 			}
+
 			buf := new(bytes.Buffer)
 			buf.WriteByte(firstByteCombos[idx][0])
+			secret := buf.Bytes()
 			if i <= math.MaxUint8 {
-				_ = binary.Write(buf, binary.LittleEndian, uint8(i))
+				secret = append(secret, byte(i))
 			} else if i <= math.MaxUint16 {
-				_ = binary.Write(buf, binary.LittleEndian, uint16(i))
+				tmp := make([]byte, 2)
+				binary.LittleEndian.PutUint16(tmp, uint16(i))
+				secret = append(secret, tmp...)
 			} else if i <= math.MaxUint32 {
-				_ = binary.Write(buf, binary.LittleEndian, uint32(i))
+				tmp := make([]byte, 4)
+				binary.LittleEndian.PutUint32(tmp, uint32(i))
+				secret = append(secret, tmp...)
 			} else {
-				_ = binary.Write(buf, binary.LittleEndian, i)
+				tmp := make([]byte, 8)
+				binary.LittleEndian.PutUint64(tmp, i)
+				secret = append(secret, tmp...)
 			}
-			if checkMinedValue(nonce, numTrailingZeroes, buf.Bytes()) {
-				success := WorkerSuccess{startingPrefix, buf.Bytes()}
-				foundAns = true
+			if checkMinedValue(nonce, numTrailingZeroes, secret) {
+				success := WorkerSuccess{startingPrefix, secret}
 				tracer.RecordAction(success)
+				if foundAns {
+					return
+				}
+				foundAns = true
 				succeeded <-success
 				return
 			}
@@ -105,9 +116,7 @@ func reverseBits(b byte) byte{
 }
 
 func checkMinedValue(nonce []uint8, numTrailingZeroes uint, secret []uint8) bool {
-	if foundAns {
-		return false
-	}
+
 
 	var compareString string
 	for i := uint(0); i < numTrailingZeroes; i++ {
